@@ -1,5 +1,6 @@
 module Main where
 import Graphics.Gloss
+import qualified Data.Map as Map
 
 type Coord = (Float, Float)
 
@@ -15,7 +16,7 @@ background :: Color
 background = white
          
 main :: IO ()
-main = display window background $ render initialState
+main = display window background $ render initialState2
 
 
 
@@ -25,10 +26,20 @@ data GameState = GameState
   , enemyUnits :: [Unit]
   } deriving Show
 
--- | Data type describing the properties and current state of a unit.
+data GameState2 = GameState2
+  { myUnits2    :: Map.Map String Unit
+  , enemyUnits2 :: Map.Map String Unit
+  } deriving Show
+
+-- put decisions in a similar Map.Map String (keyed by same values),
+-- and can do a mergesort-like walk to produce effects/new unit state
+
+
+-- | Show type describing the properties and current state of a unit.
 -- | Can make this "inherit" from some common values later.
 data Unit = Unit
-  { health  :: Integer       -- ^ When this reaches <= 0, the unit disappears.
+  { name    :: String        -- ^ Name/ID of the unit. Maybe alphanumeric with prefix describing type.
+  , health  :: Integer       -- ^ When this reaches <= 0, the unit disappears.
   , speed   :: Float         -- ^ How far the unit moves in 1 time step.
   , attack  :: Integer       -- ^ How much damage the unit does when one attack lands.
   , attackType :: AttackType -- ^ Whether the attack is close-range or long-distance, with the range given in the latter case.
@@ -40,7 +51,8 @@ data AttackType = Melee | Ranged Float
 
 melee :: Unit
 melee = Unit
-  { health     = 100
+  { name       = "melee"
+  , health     = 100
   , speed      = 2.0
   , attack     = 10
   , attackType = Melee
@@ -53,9 +65,10 @@ melee = Unit
 
 ranged :: Unit
 ranged = Unit
-  { health = 60
-  , speed = 1.5
-  , attack = 6
+  { name       = "ranged"
+  , health     = 60
+  , speed      = 1.5
+  , attack     = 6
   , attackType = Ranged 4.5
   , position   = (0, 0)
   }
@@ -86,13 +99,48 @@ initialState = GameState
   { myUnits    = myInitialUnits
   , enemyUnits = enemyInitialUnits
   }
-                    
 
-render :: GameState -> Picture
-render gameState = pictures $
-  myPictures ++ enemyPictures
-  where myPictures    = map drawMyUnit (myUnits gameState)
-        enemyPictures = map drawEnemyUnit (enemyUnits gameState)
+initialState2 :: GameState2
+initialState2 = GameState2
+  { myUnits2    = myInitialUnits2
+  , enemyUnits2 = enemyInitialUnits2
+  }  
+
+-- does this work? might be useful
+-- newtype Container = Map.Map String
+
+myInitialUnits2, enemyInitialUnits2 :: Map.Map String Unit
+myInitialUnits2 = Map.fromList $ map (\unit -> (name unit, unit)) $
+  zipWith modifyName (map show [1..]) meleeUnits ++
+  zipWith modifyName (map show [1..]) rangedUnits
+  where
+    meleeUnits = [translateUnit melee coord | coord <- myInitialMeleePositions]
+    rangedUnits = [translateUnit ranged coord | coord <- myInitialRangedPositions]
+
+enemyInitialUnits2 = Map.fromList $ map (\unit -> (name unit, unit)) $
+  zipWith modifyName (map show [1..]) meleeUnits ++
+  zipWith modifyName (map show [1..]) rangedUnits
+  where
+    meleeUnits = [translateUnit melee coord | coord <- enemyInitialMeleePositions]
+    rangedUnits = [translateUnit ranged coord | coord <- enemyInitialRangedPositions]
+
+-- related to a lens
+modifyName :: String -> Unit -> Unit
+modifyName suffix unit =
+  unit { name = (name unit) ++ suffix }
+  
+  
+
+border :: Picture
+border = Color black $
+  line [(-480, -420), (-480, 420), (480, 420), (480, -420), (-480, -420)]
+
+render :: GameState2 -> Picture
+render gameState = pictures $ [border]
+  ++ (Map.elems myPictures)
+  ++ (Map.elems enemyPictures)
+  where myPictures    = Map.map drawMyUnit (myUnits2 gameState)
+        enemyPictures = Map.map drawEnemyUnit (enemyUnits2 gameState)
 
 
 translate' :: Coord -> Picture -> Picture
@@ -101,13 +149,13 @@ translate' coord picture = translate (fst coord) (snd coord) picture
 
 drawMyUnit :: Unit -> Picture
 drawMyUnit unit = case (attackType unit) of
-  Melee    -> translate' (position unit) $ color myMeleeColor $ circleSolid 20
-  Ranged _ -> translate' (position unit) $ color myRangedColor $ rectangleSolid 20 20
+  Melee    -> translate' (position unit) $ color myMeleeColor $ rectangleSolid 15 15
+  Ranged _ -> translate' (position unit) $ color myRangedColor $ circleSolid 12
 
 drawEnemyUnit :: Unit -> Picture
 drawEnemyUnit unit = case (attackType unit) of
-  Melee    -> translate' (position unit) $ color enemyMeleeColor $ circleSolid 20
-  Ranged _ -> translate' (position unit) $ color enemyRangedColor $ rectangleSolid 20 20
+  Melee    -> translate' (position unit) $ color enemyMeleeColor $ rectangleSolid 15 15
+  Ranged _ -> translate' (position unit) $ color enemyRangedColor $ circleSolid 12
 
 myMeleeColor, myRangedColor, enemyMeleeColor, enemyRangedColor :: Color
 myMeleeColor = dark blue
