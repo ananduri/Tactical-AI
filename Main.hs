@@ -19,13 +19,16 @@ main :: IO ()
 main = display window background $ render initialState2
 
 
-
 -- | Data type describing the state of the game.
 data GameState = GameState
   { myUnits    :: [Unit]
   , enemyUnits :: [Unit]
   } deriving Show
 
+-- this is the one I'm using
+-- why have two separate maps? can just store two separate sets of keys/strings/IDs?
+-- does that rly solve the problem
+-- can put a label in the unit itself to denote who controls it?
 data GameState2 = GameState2
   { myUnits2    :: Map.Map String Unit
   , enemyUnits2 :: Map.Map String Unit
@@ -48,6 +51,9 @@ data Unit = Unit
 
 data AttackType = Melee | Ranged Float
   deriving Show
+
+meleeRange :: Float
+meleeRange = 1.0
 
 melee :: Unit
 melee = Unit
@@ -125,6 +131,7 @@ enemyInitialUnits2 = Map.fromList $ map (\unit -> (name unit, unit)) $
     rangedUnits = [translateUnit ranged coord | coord <- enemyInitialRangedPositions]
 
 -- related to a lens
+-- all the modifications can be done with a lens
 modifyName :: String -> Unit -> Unit
 modifyName suffix unit =
   unit { name = (name unit) ++ suffix }

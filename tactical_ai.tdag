@@ -1,0 +1,7 @@
+(Simulate interacting units that you can interact with and program)
+
+(Draw units)
+
+(* Resolve effects, with GameState)
+
+(Add time transation to units)

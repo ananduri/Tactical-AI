@@ -29,15 +29,16 @@ applyDecision unit dec = case dec of
   Attack unit' -> (Engagement (name unit) (name unit'), unit)
 
 -- the strings here are unit names/identifiers
+-- Engagement represents one unit attacking another. And the damage that happens.
 data Effect = Engagement String String
             | Nil
             deriving Show
 
--- play with this
-type Unresolved = ([Effect], GameState2)
 
 -- this resembles an Applicative computation
 -- this func assumes both are in a Map.Map String. but what if one is in a list?
+-- assocs returns tuples of keys and vals in a map in ascending key order
+-- want the results to be independent of the order in which the apply happens
 applyDecisions :: GameState2 -> Decisions -> Unresolved
 applyDecisions gameState decisions =
   merge (assocs gameState) (assocs decisions) [] Map.empty
@@ -53,24 +54,55 @@ applyDecisions gameState decisions =
         insert' u units = Map.insert (name u) u units
 
 
-  
-  unzip $ map $ uncurry applyDecision $ zip decisions gameState
+-- play with this
+type Unresolved = ([Effect], GameState2)
 
 
-
+-- go through the effects, and apply them one by one to the unit in units,
+-- returning a new gamestate each time. This is just looping through this stuff
 resolve :: Unresolved -> GameState2
-resolve (effects, units) = units  -- dummy impl
+-- resolve (effects, units) = units
+resolve (effects, units) = foldr applyEffect units effects
+
+
+-- need to write code for how an engagement affects GameState
+-- find the unit first in the Engagement
+-- get its attack info
+-- find the second unit in the Engagement
+-- get its defense info
+-- find the damage
+-- do the damange to the second unit
+-- return a new gamestate with the second unit damaged or deleted etc.
+
+
+applyEffect :: Effect -> GameState2 -> GameState2
+applyEffect effect gamestate = case effect of
+  Nil -> gamestate
+  Engagement id1 id2 ->
+    let unit1 = (myUnits2 gamestate) ! id1  -- getting both from myUnits?)
+        enemyUnits = enemyUnits2 gamestate
+        unit2 = enemyUnits ! id2
+        inrange = inRange unit1 unit2
+        damage = (attack unit1)
+        hp = (health unit2)
+    in  if damage < health
+    -- return new gameState with unit2 modified in the enemyUnits map
+    then gamestate { enemyUnits2 = insert id2 (unit2 { health = hp - damage}) enemyUnits}
+    else gamestate { enemyUnits2 = delete id2 enemyUnits}
+    
+    
 
 
 
--- c d -> c u -> c (e, u) -> (c e, c u) or ([e], c u)
--- no, just do
--- c d -> c u -> ([e], cu)
--- since ordering of e doesn't matter (it's a monoid)
+inRange :: Unit -> Unit -> Bool
+inRange unit1 unit2 = case (attackType unit1) of
+  Melee -> distance (position unit1) (position unit2) <= meleeDistance
+  Ranged r -> distance (position unit1) (position unit2) <= r
 
 
+  
 
-
+          
 
 moveInDir :: Direction -> Unit -> Unit
 moveInDir dir unit = translate (scale (speed unit) dir) unit
