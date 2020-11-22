@@ -2,6 +2,8 @@
 
 (Draw units)
 
-(* Resolve effects, with GameState)
+(Resolve basic effects, with GameState)
 
-(Add time transation to units)
+(* Create policy data structures and translate them into decisions)
+
+(Add time transation to units, applying decisions)
