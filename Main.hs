@@ -1,7 +1,12 @@
+{-# LANGUAGE TemplateHaskell, RankNTypes #-}
+{-# LANGUAGE MultiWayIf #-}
+
 module Main where
 import Graphics.Gloss
 import Graphics.Gloss.Interface.IO.Interact (Event)
 import qualified Data.Map as Map
+import Control.Lens
+import Data.Maybe (fromJust)
 --import Policy
 
 type Coord = (Float, Float)
@@ -18,31 +23,54 @@ background :: Color
 background = white
 
 freq :: Int
-freq = 15
+freq = 20
              
 main :: IO ()
---main = display window background $ render initialState
 main = play window background freq initialState render handleEvent evolveGame
+--main = display window background $ render initialState
 
+-- also need to increment all counters (unit attack, animation, other timers), do it here?
+-- still need to do this
 evolveGame :: Float -> GameState -> GameState
-evolveGame _ g = stepUnits g (evalPolicies g)
+evolveGame _ g = stepCounters $ stepUnits g (evalPolicies g)
 
 handleEvent :: Event -> GameState -> GameState
 handleEvent event gameState = gameState
 
+type Animation = (Float -> Maybe Picture, Float)
+
 
 -- | Data type describing the state of the game.
 data GameState = GameState
-  { units :: Map.Map String Unit
-  , policies :: Map.Map String Policy
-  , controllers :: Map.Map String Controller
+  { _units :: Map.Map String Unit
+  , _policies :: Map.Map String Policy
+  , _controllers :: Map.Map String Controller
+  , _ephemera :: [Animation]
   }
-  
-instance Show GameState where
-  show gamestate = show (units gamestate)
 
+instance Show GameState where
+  show gamestate = show (_units gamestate)
 
 type Units = Map.Map String Unit
+  
+units :: Lens' GameState Units
+units = lens _units (\state us -> state { _units = us})
+
+ephemera :: Lens' GameState [Animation]
+ephemera = lens _ephemera (\state as -> state { _ephemera = as})
+
+attackRate :: Lens' Unit Integer
+attackRate = lens _attackRate (\unit rate -> unit { _attackRate = rate})
+
+attackCounter :: Lens' Unit Integer
+attackCounter = lens _attackCounter (\unit counter -> unit { _attackCounter = counter})
+
+decrAttackCounter :: Unit -> Unit
+decrAttackCounter = over attackCounter (\c -> if c == 0 then 0 else c - 1)
+
+incrAnimCounters :: [Animation] -> [Animation]
+incrAnimCounters = map (fmap (+1))
+                 
 
 -- can put a label in the unit itself to denote who controls it?
 -- no. instead, making a separate Map to store the labels.
@@ -63,6 +91,8 @@ data Unit = Unit
   , speed   :: Float         -- ^ How far the unit moves in 1 time step.
   , attack  :: Integer       -- ^ How much damage the unit does when one attack lands.
   , attackType :: AttackType -- ^ Whether the attack is close-range or long-distance, with the range given in the latter case.
+  , _attackRate :: Integer    -- ^ How many frames to wait before attacking again (including first attack frame).
+  , _attackCounter :: Integer -- ^ The actual value of the attack counter--counts down from attackRate to 0 and stays at 0.
   , position :: Coord        -- ^ Location of this unit.
   } deriving Show
 
@@ -72,13 +102,16 @@ data AttackType = Melee | Ranged Float
 meleeRange :: Float
 meleeRange = 1.0
 
+-- need an attack rate, as well. can't attack every frame.
+
 melee :: Unit
 melee = Unit
   { name       = "melee"
   , health     = 100
-  , speed      = 2.0
+  , speed      = 1.0
   , attack     = 10
   , attackType = Melee
+  , attackRate = 20
   , position   = (0, 0)
   }
 
@@ -86,9 +119,10 @@ ranged :: Unit
 ranged = Unit
   { name       = "ranged"
   , health     = 60
-  , speed      = 1.5
+  , speed      = 0.75
   , attack     = 6
   , attackType = Ranged 4.5
+  , attackRate = 30
   , position   = (0, 0)
   }
 
@@ -108,9 +142,10 @@ enemyInitialRangedPositions = [(-100, 300), (100, 300)]
 
 initialState :: GameState
 initialState = GameState
-  { units = initialUnits
-  , policies = initialPolicies
-  , controllers = initialControllers
+  { _units = initialUnits
+  , _policies = initialPolicies
+  , _controllers = initialControllers
+  , _ephemera = []
   }
 
 initialUnits = Map.union myInitialUnits enemyInitialUnits
@@ -148,19 +183,23 @@ border = Color black $
 
 render :: GameState -> Picture
 render gameState = pictures $ [border]
-  ++ foldr go [] (Map.assocs $ controllers gameState)
+  ++ foldr go [] (Map.assocs $ _controllers gameState)
+  ++ foldr evalAnimation [] (_ephemera gameState)
   where
-    allUnits = units gameState
+    allUnits = _units gameState
     go (id, controller) ps = case controller of
-          Me    -> (drawMyUnit $ allUnits Map.! id):ps
-          Enemy -> (drawEnemyUnit $ allUnits Map.! id):ps
+      Me    -> (drawMyUnit $ allUnits Map.! id):ps
+      Enemy -> (drawEnemyUnit $ allUnits Map.! id):ps
+    evalAnimation (anim, t) ps = case (anim t) of
+      Nothing -> ps
+      otherwise -> (fromJust (anim t)):ps
 
 -- translate is a Gloss function with:
 -- translate :: Float -> Float -> Picture -> Picture
 translate' :: Coord -> Picture -> Picture
 translate' coord picture = translate (fst coord) (snd coord) picture
 
-
+-- can mess with this to add life bars
 drawMyUnit :: Unit -> Picture
 drawMyUnit unit = case (attackType unit) of
   Melee    -> translate' (position unit) $ color myMeleeColor $ rectangleSolid 15 15
@@ -198,11 +237,6 @@ moveUpward = Move (0, 1)
 moveDownward :: Decision
 moveDownward = Move (0, -1)
 
-stepUnits :: GameState -> Decisions -> GameState
-stepUnits gameState decs =
-  let unresolved = applyDecisions gameState decs
-  in  resolve unresolved
-
 -- The plan is, at every step, use the policies for each unit (the one-to-one relation btw units and policies could change)
 -- to come up with a decision for every unit (this /will/ have a one-to-one relationship)
 -- and then use stepGame to evolve the gameState.
@@ -211,7 +245,7 @@ stepUnits gameState decs =
 -- Since I have this simple one-to-one relationship for both policies and decisions right now?
 -- Is Map a functor?
 evalPolicies :: GameState -> Decisions
-evalPolicies g = Map.map (\p -> p (units g)) (policies g)
+evalPolicies g = Map.map (\p -> p (_units g)) (_policies g)
 
 
 
@@ -223,6 +257,10 @@ type Policies = Map.Map String Policy
 -- A policy makes a decision based on the world, and not what the world is thinking
 -- (why this is Units and not GameState; GameState includes Policies which is what other units are thinking)
 type Policy = Units -> Decision
+
+
+-- now create a simple policy that loops through all units and attacks the first enemy unit in range instead of moving
+
 
 -- initial policies--move forward for my units, move downward for enemy units
 myInitialPolicy :: Policy
@@ -257,13 +295,17 @@ data Effect = Engagement String String
             deriving Show
 
 
+
+-- play with this
+type Unresolved = ([Effect], GameState)
+
 -- this resembles an Applicative computation
 -- this func assumes both GameState and Decisions are in a Map.Map String (what if one is in a list?)
 -- assocs returns tuples of keys and vals in a map in ascending key order
 -- Want the results to be independent of the order in which the apply happens.
 applyDecisions :: GameState -> Decisions -> Unresolved
 applyDecisions gameState decisions =
-  injectGameState $ merge (Map.assocs (units gameState)) (Map.assocs decisions) [] Map.empty
+  injectGameState $ merge (Map.assocs (_units gameState)) (Map.assocs decisions) [] Map.empty
   where
     merge _ [] acc units = (acc, units)
     merge [] _ acc units = (acc, units)
@@ -274,57 +316,20 @@ applyDecisions gameState decisions =
       where  -- can i put this at higher level?
         res = applyDecision (snd x) (snd y)
         insert' u units = Map.insert (name u) u units
-    injectGameState (es, us) = (es, gameState { units = us })
+    injectGameState (es, us) = (es, gameState { _units = us })
 
 
--- play with this
-type Unresolved = ([Effect], GameState)
 
 
--- go through the effects, and apply them one by one to the unit in units,
--- returning a new gamestate each time. This is just looping through this stuff
-resolve :: Unresolved -> GameState
-resolve (effects, gameState) = foldr applyEffect gameState effects
+
+
 
 -- want to turn the effects into animation effects, as well
-
-
--- need to write code for how an engagement affects GameState
--- find the unit first in the Engagement
--- get its attack info
--- find the second unit in the Engagement
--- get its defense info
--- find the damage
--- do the damange to the second unit
--- return a new gamestate with the second unit damaged or deleted etc.
-
-
--- | This is the meat.
-applyEffect :: Effect -> GameState -> GameState
-applyEffect effect gameState = case effect of
-  Nil -> gameState
-  Engagement id1 id2 ->
-    let unit1 = (units gameState) Map.! id1 
-        unit2 = (units gameState) Map.! id2
-        inrange = inRange unit1 unit2
-        damage = (attack unit1)
-        currhealth = (health unit2)
-        allUnits = units gameState
-    in  if damage < currhealth
-    then gameState { units = Map.insert id2 (unit2 { health = currhealth - damage}) allUnits}
-    else gameState { units = Map.delete id2 allUnits}
-    
-    
-
-
 
 inRange :: Unit -> Unit -> Bool
 inRange unit1 unit2 = case (attackType unit1) of
   Melee -> distance (position unit1) (position unit2) <= meleeRange
   Ranged r -> distance (position unit1) (position unit2) <= r
-
-
-  
 
 
 moveInDir :: Direction -> Unit -> Unit
@@ -339,3 +344,65 @@ distance :: Coord -> Coord -> Float
 distance (x1, y1) (x2, y2) = sqrt(x^2 + y^2)
   where x = x2 - x1
         y = y2 - y1
+
+
+-- it's a number of frames, so should be Integer always?
+laserTime :: Float
+laserTime = 5
+
+-- Right now a line just appears; eventually make it shoot from the source to the dest.
+getLaserAnimation :: Coord -> Coord -> Animation
+getLaserAnimation s d = wrapAnim $ \t -> if
+  | t > 0 && t < laserTime -> Just $ Color cyan $ line [s, d]
+  | otherwise              -> Nothing
+
+wrapAnim :: b -> (b, Float)
+wrapAnim a = (a, 0)
+
+
+--makeLenses ''GameState
+
+-- need to write code for how an engagement affects GameState
+-- find the unit first in the Engagement
+-- get its attack info
+-- find the second unit in the Engagement
+-- get its defense info
+-- find the damage
+-- do the damange to the second unit
+-- return a new gamestate with the second unit damaged or deleted etc.
+
+-- | This is the meat.
+applyEffect :: Effect -> GameState -> GameState
+applyEffect effect gameState = case effect of
+  Nil -> gameState
+  Engagement id1 id2 ->
+    let unit1 = (_units gameState) Map.! id1 
+        unit2 = (_units gameState) Map.! id2
+        isInRange = inRange unit1 unit2
+        damage = (attack unit1)
+        currhealth = (health unit2)
+        allUnits = _units gameState
+        laser = getLaserAnimation (position unit1) (position unit2)
+    in
+      if (not isInRange) then gameState
+      else if damage < currhealth
+      then over ephemera (laser:) $ gameState { _units = Map.insert id2 (unit2 { health = currhealth - damage}) allUnits}
+      else over ephemera (laser:) $ gameState { _units = Map.delete id2 allUnits}
+    
+    
+-- go through the effects, and apply them one by one to the unit in units,
+-- returning a new gamestate each time. This is just looping through this stuff
+resolve :: Unresolved -> GameState
+resolve (effects, gameState) = foldr applyEffect gameState effects
+        
+
+stepUnits :: GameState -> Decisions -> GameState
+stepUnits gameState decs =
+  let unresolved = applyDecisions gameState decs
+  in  resolve unresolved
+
+
+-- over :: Lens' a b -> (b -> b) -> a -> a
+stepCounters :: GameState -> GameState
+stepCounters = over units (Map.map decrAttackCounter)
+             . over ephemera incrAnimCounters
