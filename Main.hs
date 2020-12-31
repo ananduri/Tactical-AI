@@ -52,18 +52,20 @@ instance Show GameState where
   show gamestate = show (_units gamestate)
 
 type Units = Map.Map String Unit
+
+makeLenses ''GameState
   
-units :: Lens' GameState Units
-units = lens _units (\state us -> state { _units = us})
+-- units :: Lens' GameState Units
+-- units = lens _units (\state us -> state { _units = us})
 
-ephemera :: Lens' GameState [Animation]
-ephemera = lens _ephemera (\state as -> state { _ephemera = as})
+-- ephemera :: Lens' GameState [Animation]
+-- ephemera = lens _ephemera (\state as -> state { _ephemera = as})
 
-attackRate :: Lens' Unit Integer
-attackRate = lens _attackRate (\unit rate -> unit { _attackRate = rate})
+-- attackRate :: Lens' Unit Integer
+-- attackRate = lens _attackRate (\unit rate -> unit { _attackRate = rate})
 
-attackCounter :: Lens' Unit Integer
-attackCounter = lens _attackCounter (\unit counter -> unit { _attackCounter = counter})
+-- attackCounter :: Lens' Unit Integer
+-- attackCounter = lens _attackCounter (\unit counter -> unit { _attackCounter = counter})
 
 decrAttackCounter :: Unit -> Unit
 decrAttackCounter = over attackCounter (\c -> if c == 0 then 0 else c - 1)
@@ -111,7 +113,8 @@ melee = Unit
   , speed      = 1.0
   , attack     = 10
   , attackType = Melee
-  , attackRate = 20
+  , _attackRate = 20
+  , _attackCounter = 0
   , position   = (0, 0)
   }
 
@@ -122,7 +125,8 @@ ranged = Unit
   , speed      = 0.75
   , attack     = 6
   , attackType = Ranged 4.5
-  , attackRate = 30
+  , _attackRate = 30
+  , _attackCounter = 0
   , position   = (0, 0)
   }
 
@@ -254,20 +258,62 @@ evalPolicies g = Map.map (\p -> p (_units g)) (_policies g)
 -- use a separate Map for the Policies, or store them directly in the Units?
 type Policies = Map.Map String Policy
 
--- A policy makes a decision based on the world, and not what the world is thinking
--- (why this is Units and not GameState; GameState includes Policies which is what other units are thinking)
-type Policy = Units -> Decision
+type Name = String  
+              
+-- A policy makes a decision based on the world
+type Policy = GameState -> Name -> Decision
 
 
 -- now create a simple policy that loops through all units and attacks the first enemy unit in range instead of moving
 
+safeHead :: [a] -> Maybe a
+safeHead []    = Nothing
+safeHead (x:_) = Just x
+
+
 
 -- initial policies--move forward for my units, move downward for enemy units
 myInitialPolicy :: Policy
-myInitialPolicy = \_ -> moveUpward
+myInitialPolicy = \_ _ -> moveUpward
 
 enemyInitialPolicy :: Policy
-enemyInitialPolicy = \_ -> moveDownward
+enemyInitialPolicy = \_ _ -> moveDownward
+
+-- naive policies--attack an enemy unit if you can, otherwise move up
+-- need: a way to fluently take into account the attack cooldown here.
+
+myNaivePolicy :: Policy
+myNaivePolicy state name =
+  case (safeHead $ (getEnemyUnits state^.controllers)
+                   (getUnitsWithin location dist)
+                    state.units) of
+    Just unit -> Attack unit
+    Nothing   -> Move (0, 1)
+
+enemyNaivePolicy :: Policy
+enemyNaivePolicy state name =
+  case (safeHead $ (getMyUnits state.controllers)
+                   (getUnitsWithin location dist)
+                    state.units) of
+    Just unit -> Attack unit
+    Nothing   -> Move (0, -1)    
+                           
+                           
+
+-- Now a common thing to do is going to be to extract a subset of units based upon conditions (filter)
+-- Can do naive O(n) iteration for now, but need to create some data structures for this.
+-- Eg a quadtree (?) for quickly locating the subset in a given area/radius.
+
+getUnitsWithinRadius :: Coord -> Float -> Units -> Units
+getUnitsWithinRadius c r = Map.filter (\u -> distance (position u) c <= r)
+
+-- need to access Controllers here
+getEnemyUnits :: Controllers -> Units -> Units
+getEnemyUnits controllers = Map.filterWithKey (\k _ -> (controllers ! k) == Me)
+
+getMyUnits :: Controllers -> Units -> Units
+getMyUnits controllers = Map.filterWithKey (\k _ -> (controllers ! k) == Me)
+
 
 -- make a similar map (for each of my and enemy) with the keys from the two maps of GameState
 -- and make the values the above
@@ -360,7 +406,7 @@ wrapAnim :: b -> (b, Float)
 wrapAnim a = (a, 0)
 
 
---makeLenses ''GameState
+
 
 -- need to write code for how an engagement affects GameState
 -- find the unit first in the Engagement
@@ -406,3 +452,7 @@ stepUnits gameState decs =
 stepCounters :: GameState -> GameState
 stepCounters = over units (Map.map decrAttackCounter)
              . over ephemera incrAnimCounters
+
+
+
+
