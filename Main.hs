@@ -1,5 +1,7 @@
 {-# LANGUAGE TemplateHaskell, RankNTypes #-}
 {-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 module Main where
 import Graphics.Gloss
@@ -39,33 +41,40 @@ handleEvent event gameState = gameState
 
 type Animation = (Float -> Maybe Picture, Float)
 
+type Units = Map.Map String Unit
+
+-- can put a label in the unit itself to denote who controls it?
+-- no. instead, making a separate Map to store the labels.
+-- can add labels to denote more opponents or neutral units
+data Controller = Me | Enemy
+  deriving (Show, Eq)
+
+type Controllers = Map.Map String Controller
 
 -- | Data type describing the state of the game.
 data GameState = GameState
   { _units :: Map.Map String Unit
-  , _policies :: Map.Map String Policy
-  , _controllers :: Map.Map String Controller
   , _ephemera :: [Animation]
   }
+-- store everything in one Map, bundled together? why all these maps?
 
 instance Show GameState where
   show gamestate = show (_units gamestate)
 
-type Units = Map.Map String Unit
 
-makeLenses ''GameState
+-- makeLenses ''GameState
   
--- units :: Lens' GameState Units
--- units = lens _units (\state us -> state { _units = us})
+units :: Lens' GameState Units
+units = lens _units (\state us -> state { _units = us})
 
--- ephemera :: Lens' GameState [Animation]
--- ephemera = lens _ephemera (\state as -> state { _ephemera = as})
+ephemera :: Lens' GameState [Animation]
+ephemera = lens _ephemera (\state as -> state { _ephemera = as})
 
--- attackRate :: Lens' Unit Integer
--- attackRate = lens _attackRate (\unit rate -> unit { _attackRate = rate})
+attackRate :: Lens' Unit Integer
+attackRate = lens _attackRate (\unit rate -> unit { _attackRate = rate})
 
--- attackCounter :: Lens' Unit Integer
--- attackCounter = lens _attackCounter (\unit counter -> unit { _attackCounter = counter})
+attackCounter :: Lens' Unit Integer
+attackCounter = lens _attackCounter (\unit counter -> unit { _attackCounter = counter})
 
 decrAttackCounter :: Unit -> Unit
 decrAttackCounter = over attackCounter (\c -> if c == 0 then 0 else c - 1)
@@ -74,28 +83,23 @@ incrAnimCounters :: [Animation] -> [Animation]
 incrAnimCounters = map (fmap (+1))
                  
 
--- can put a label in the unit itself to denote who controls it?
--- no. instead, making a separate Map to store the labels.
--- can add labels to denote more opponents or neutral units
-data Controller = Me | Enemy
-  deriving Show
-
-type Controllers = Map.Map String Controller
-
 -- put decisions in a similar Map.Map String (keyed by same values),
 -- and can do a mergesort-like walk to produce effects/new unit state
 
 -- | Show type describing the properties and current state of a unit.
 -- | Can make this "inherit" from some common values later.
+-- use underscores for all field names (so can create lenses for them)
 data Unit = Unit
-  { name    :: String        -- ^ Name/ID of the unit. Maybe alphanumeric with prefix describing type.
-  , health  :: Integer       -- ^ When this reaches <= 0, the unit disappears.
-  , speed   :: Float         -- ^ How far the unit moves in 1 time step.
-  , attack  :: Integer       -- ^ How much damage the unit does when one attack lands.
-  , attackType :: AttackType -- ^ Whether the attack is close-range or long-distance, with the range given in the latter case.
-  , _attackRate :: Integer    -- ^ How many frames to wait before attacking again (including first attack frame).
-  , _attackCounter :: Integer -- ^ The actual value of the attack counter--counts down from attackRate to 0 and stays at 0.
-  , position :: Coord        -- ^ Location of this unit.
+  { name           :: String     -- ^ Name/ID of the unit. Maybe alphanumeric with prefix describing type.
+  , health         :: Integer    -- ^ When this reaches <= 0, the unit disappears.
+  , speed          :: Float      -- ^ How far the unit moves in 1 time step.
+  , attack         :: Integer    -- ^ How much damage the unit does when one attack lands.
+  , attackType     :: AttackType -- ^ Whether the attack is close-range or long-distance, with the range given in the latter case.
+  , _attackRate    :: Integer    -- ^ How many frames to wait before attacking again (including first attack frame).
+  , _attackCounter :: Integer    -- ^ The actual value of the attack counter--counts down from attackRate to 0 and stays at 0.
+  , position       :: Coord      -- ^ Location of this unit.
+  , controller     :: Controller -- ^ Who controls this unit.
+  , policy         :: Policy     -- ^ Current Policy of the unit. Used to make a Decision.
   } deriving Show
 
 data AttackType = Melee | Ranged Float
@@ -104,10 +108,8 @@ data AttackType = Melee | Ranged Float
 meleeRange :: Float
 meleeRange = 1.0
 
--- need an attack rate, as well. can't attack every frame.
-
-melee :: Unit
-melee = Unit
+meleeUnit :: Unit
+meleeUnit = Unit
   { name       = "melee"
   , health     = 100
   , speed      = 1.0
@@ -118,8 +120,8 @@ melee = Unit
   , position   = (0, 0)
   }
 
-ranged :: Unit
-ranged = Unit
+rangedUnit :: Unit
+rangedUnit = Unit
   { name       = "ranged"
   , health     = 60
   , speed      = 0.75
@@ -138,6 +140,16 @@ translateUnit (x, y) unit =
 translateCoord :: Coord -> Coord -> Coord
 translateCoord (x, y) (a, b) = (x + a, y + b)
 
+setController :: Controller -> Unit -> Unit
+setController c unit =
+  unit { controller = c }
+
+setPolicy :: (Unit -> Bool) -> Policy -> Unit -> Unit
+setPolicy pred p unit =
+  if pred unit
+  then unit { policy = p }
+  else unit
+
 myInitialMeleePositions, enemyInitialMeleePositions :: [Coord]
 myInitialMeleePositions = [(-100, -250), (100, -250)]
 enemyInitialMeleePositions = [(-100, 250), (100, 250)]
@@ -147,53 +159,53 @@ enemyInitialRangedPositions = [(-100, 300), (100, 300)]
 initialState :: GameState
 initialState = GameState
   { _units = initialUnits
-  , _policies = initialPolicies
-  , _controllers = initialControllers
   , _ephemera = []
   }
 
 initialUnits = Map.union myInitialUnits enemyInitialUnits
 
-initialControllers :: Controllers
-initialControllers = Map.union
-  (Map.map (\_ -> Me) myInitialUnits)
-  (Map.map (\_ -> Enemy) enemyInitialUnits)
-
--- The keys are melee1, melee2, ..., ranged1, ranged2, etc.
-myInitialUnits, enemyInitialUnits :: Map.Map String Unit
-myInitialUnits = Map.fromList $ map (\unit -> (name unit, unit)) $
-  zipWith modifyName (map show [1..]) meleeUnits ++
-  zipWith modifyName (map show [1..]) rangedUnits
-  where
-    meleeUnits = [translateUnit coord melee | coord <- myInitialMeleePositions]
-    rangedUnits = [translateUnit coord ranged | coord <- myInitialRangedPositions]
-
-enemyInitialUnits = Map.fromList $ map (\unit -> (name unit, unit)) $
-  zipWith modifyName (map show [100..]) meleeUnits ++
-  zipWith modifyName (map show [100..]) rangedUnits
-  where
-    meleeUnits = [translateUnit coord melee | coord <- enemyInitialMeleePositions]
-    rangedUnits = [translateUnit coord ranged | coord <- enemyInitialRangedPositions]
-
 -- related to a lens. all the modifications can be done with a lens
 modifyName :: String -> Unit -> Unit
 modifyName suffix unit =
   unit { name = (name unit) ++ suffix }
+
+-- The keys are melee1, melee2, ..., ranged1, ranged2, etc.
+myInitialUnits, enemyInitialUnits :: Map.Map String Unit
+myInitialUnits = Map.map (\unit -> unit { policy = myInitialPolicy}) $
+  Map.fromList $ map (\unit -> (name unit, unit)) $
+  zipWith modifyName (map show [1..]) meleeUnits ++
+  zipWith modifyName (map show [1..]) rangedUnits
+  where
+    meleeUnits = map (setController Me) [translateUnit coord meleeUnit | coord <- myInitialMeleePositions]
+    rangedUnits = map (setController Me) [translateUnit coord rangedUnit | coord <- myInitialRangedPositions]
+
+enemyInitialUnits = Map.map (\unit -> unit { policy = myInitialPolicy}) $
+  Map.fromList $ map (\unit -> (name unit, unit)) $
+  zipWith modifyName (map show [100..]) meleeUnits ++
+  zipWith modifyName (map show [100..]) rangedUnits
+  where
+    meleeUnits = map (setController Enemy) [translateUnit coord meleeUnit | coord <- enemyInitialMeleePositions]
+    rangedUnits = map (setController Enemy) [translateUnit coord rangedUnit | coord <- enemyInitialRangedPositions]
+
+
+
+
   
 
 border :: Picture
 border = Color black $
   line [(-480, -420), (-480, 420), (480, 420), (480, -420), (-480, -420)]
 
+-- use maps here instead of foldr
 render :: GameState -> Picture
 render gameState = pictures $ [border]
-  ++ foldr go [] (Map.assocs $ _controllers gameState)
+  ++ foldr go [] (Map.elems allUnits)
   ++ foldr evalAnimation [] (_ephemera gameState)
   where
     allUnits = _units gameState
-    go (id, controller) ps = case controller of
-      Me    -> (drawMyUnit $ allUnits Map.! id):ps
-      Enemy -> (drawEnemyUnit $ allUnits Map.! id):ps
+    go unit ps = case (controller unit) of
+      Me    -> (drawMyUnit $ unit):ps
+      Enemy -> (drawEnemyUnit $ unit):ps
     evalAnimation (anim, t) ps = case (anim t) of
       Nothing -> ps
       otherwise -> (fromJust (anim t)):ps
@@ -229,8 +241,11 @@ enemyRangedColor = light $ light red
 
 type Decisions = Map.Map String Decision
 
-data Decision = Move Direction | Attack Unit
-               deriving Show
+
+
+data Decision = Move Direction
+              | Attack Unit              
+              deriving Show
 
 type Direction = (Float, Float)
 
@@ -249,7 +264,8 @@ moveDownward = Move (0, -1)
 -- Since I have this simple one-to-one relationship for both policies and decisions right now?
 -- Is Map a functor?
 evalPolicies :: GameState -> Decisions
-evalPolicies g = Map.map (\p -> p (_units g)) (_policies g)
+evalPolicies gamestate = Map.map applyPolicy (_units gamestate)
+  where applyPolicy unit = (policy unit) gamestate unit
 
 
 
@@ -258,11 +274,14 @@ evalPolicies g = Map.map (\p -> p (_units g)) (_policies g)
 -- use a separate Map for the Policies, or store them directly in the Units?
 type Policies = Map.Map String Policy
 
+-- Name is a way to refer to an individual unit
 type Name = String  
               
 -- A policy makes a decision based on the world
-type Policy = GameState -> Name -> Decision
+type Policy = GameState -> Unit -> Decision
 
+instance Show Policy where
+  show policy = show ""
 
 -- now create a simple policy that loops through all units and attacks the first enemy unit in range instead of moving
 
@@ -282,21 +301,21 @@ enemyInitialPolicy = \_ _ -> moveDownward
 -- naive policies--attack an enemy unit if you can, otherwise move up
 -- need: a way to fluently take into account the attack cooldown here.
 
-myNaivePolicy :: Policy
-myNaivePolicy state name =
-  case (safeHead $ (getEnemyUnits state^.controllers)
-                   (getUnitsWithin location dist)
-                    state.units) of
-    Just unit -> Attack unit
-    Nothing   -> Move (0, 1)
+-- myNaivePolicy :: Policy
+-- myNaivePolicy state name =
+--   case (safeHead $ (getEnemyUnits state^.controllers)
+--                    (getUnitsWithinRadius location dist)
+--                     state.units) of
+--     Just unit -> Attack unit
+--     Nothing   -> Move (0, 1)
 
-enemyNaivePolicy :: Policy
-enemyNaivePolicy state name =
-  case (safeHead $ (getMyUnits state.controllers)
-                   (getUnitsWithin location dist)
-                    state.units) of
-    Just unit -> Attack unit
-    Nothing   -> Move (0, -1)    
+-- enemyNaivePolicy :: Policy
+-- enemyNaivePolicy state name =
+--   case (safeHead $ (getMyUnits state.controllers)
+--                    (getUnitsWithinRadius location dist)
+--                     state.units) of
+--     Just unit -> Attack unit
+--     Nothing   -> Move (0, -1)    
                            
                            
 
@@ -308,12 +327,11 @@ getUnitsWithinRadius :: Coord -> Float -> Units -> Units
 getUnitsWithinRadius c r = Map.filter (\u -> distance (position u) c <= r)
 
 -- need to access Controllers here
-getEnemyUnits :: Controllers -> Units -> Units
-getEnemyUnits controllers = Map.filterWithKey (\k _ -> (controllers ! k) == Me)
+getEnemyUnits ::  Units -> Units
+getEnemyUnits units = Map.filter (\unit -> (controller unit) == Enemy) units
 
-getMyUnits :: Controllers -> Units -> Units
-getMyUnits controllers = Map.filterWithKey (\k _ -> (controllers ! k) == Me)
-
+getMyUnits :: Units -> Units
+getMyUnits units = Map.filter (\unit -> (controller unit) == Me) units
 
 -- make a similar map (for each of my and enemy) with the keys from the two maps of GameState
 -- and make the values the above
@@ -346,6 +364,7 @@ data Effect = Engagement String String
 type Unresolved = ([Effect], GameState)
 
 -- this resembles an Applicative computation
+-- (is Map [] a functor?)
 -- this func assumes both GameState and Decisions are in a Map.Map String (what if one is in a list?)
 -- assocs returns tuples of keys and vals in a map in ascending key order
 -- Want the results to be independent of the order in which the apply happens.
@@ -452,7 +471,5 @@ stepUnits gameState decs =
 stepCounters :: GameState -> GameState
 stepCounters = over units (Map.map decrAttackCounter)
              . over ephemera incrAnimCounters
-
-
 
 

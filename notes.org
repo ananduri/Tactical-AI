@@ -2,4 +2,6 @@ Might be easier to not separate units into my and enemy, and instead
 just have one giant list, with an additional attribute for my or
 enemy.
 
-Need collision detection, minimum distance to stay away from other units, pathfinding
+Need collision detection, 
+minimum distance to stay away from other units, 
+pathfinding
